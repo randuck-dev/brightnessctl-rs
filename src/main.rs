@@ -16,6 +16,9 @@ struct Cli {
     /// Name of the person to greet
     #[command(subcommand)]
     command: Commands,
+
+    #[arg(short, long, global = true)]
+    device: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,15 +54,16 @@ fn main() {
     let args = Cli::parse();
 
     let devices = read_all_brightness_devices();
+    let device_name = args.device.unwrap_or_else(|| String::from("amdgpu_bl1"));
     let default_device = devices
         .iter()
         .clone()
-        .filter(|x| x.device_name.eq("amdgpu_bl1"))
+        .filter(|x| x.device_name.eq(&device_name))
         .last()
         .unwrap();
 
     match args.command {
-        Commands::Get => {
+        Commands::Get {} => {
             get_handler(default_device);
         }
         Commands::Set { value } => {
@@ -87,9 +91,7 @@ enum BacklightType {
 struct BacklightDevice {
     device_name: String,
     max_brightness: u32,
-    // this value is not necessarily the same as brightness
     brightness: Brightness,
-
     backlight_type: BacklightType,
 }
 
@@ -97,8 +99,14 @@ fn write_brightness_value_for_device(device: &BacklightDevice, value: Brightness
     let resolved_brightness = min(max(0, value.0), device.max_brightness);
     println!("Setting to: {}", resolved_brightness);
 
-    let root = "/sys/class/backlight/";
-    let path = Path::new(root).join(&device.device_name).join("brightness");
+    let class_sub_path = match device.backlight_type {
+        BacklightType::Backlight => "backlight",
+        BacklightType::Leds => "leds",
+    };
+    let root = format!("/sys/class/{}/", class_sub_path);
+    let path = Path::new(root.as_str())
+        .join(&device.device_name)
+        .join("brightness");
 
     let write_result = fs::write(path, resolved_brightness.to_string());
     match write_result {
