@@ -1,5 +1,5 @@
 use std::{
-    cmp::min,
+    cmp::{max, min},
     fmt::{self},
     fs::{self},
     path::{Path, PathBuf},
@@ -23,20 +23,53 @@ enum Commands {
     Get,
     Set { value: String },
     Max,
+    List,
+}
+
+fn read_all_brightness_devices() -> Vec<BacklightDevice> {
+    let mut backlight_devices: Vec<BacklightDevice> = get_subdirectories("/sys/class/backlight/")
+        .unwrap()
+        .iter()
+        .map(|x| build_device(BacklightType::Backlight, x.clone()).unwrap())
+        .collect();
+
+    let mut led_devices: Vec<BacklightDevice> = get_subdirectories("/sys/class/leds/")
+        .unwrap()
+        .iter()
+        .map(|x| build_device(BacklightType::Leds, x.clone()).unwrap())
+        .collect();
+
+    let mut x: Vec<BacklightDevice> = vec![];
+
+    x.append(&mut backlight_devices);
+    x.append(&mut led_devices);
+
+    x
 }
 
 fn main() {
     let args = Cli::parse();
 
+    let devices = read_all_brightness_devices();
+    let default_device = devices
+        .iter()
+        .clone()
+        .filter(|x| x.device_name.eq("amdgpu_bl1"))
+        .last()
+        .unwrap();
+
     match args.command {
         Commands::Get => {
-            get_handler();
+            get_handler(default_device);
         }
         Commands::Set { value } => {
-            set_handler(value);
+            set_handler(default_device, value);
         }
         Commands::Max => {
-            max_handler();
+            max_handler(default_device);
+        }
+        Commands::List => {
+            println!("{:?}", devices)
         }
     }
 }
@@ -45,16 +78,23 @@ fn main() {
 struct Brightness(u32);
 
 #[derive(Debug)]
+enum BacklightType {
+    Backlight,
+    Leds,
+}
+
+#[derive(Debug)]
 struct BacklightDevice {
     device_name: String,
     max_brightness: u32,
     // this value is not necessarily the same as brightness
-    actual_brightness: u32,
     brightness: Brightness,
+
+    backlight_type: BacklightType,
 }
 
 fn write_brightness_value_for_device(device: &BacklightDevice, value: Brightness) {
-    let resolved_brightness = min(value.0, device.max_brightness);
+    let resolved_brightness = min(max(0, value.0), device.max_brightness);
     println!("Setting to: {}", resolved_brightness);
 
     let root = "/sys/class/backlight/";
@@ -70,30 +110,12 @@ fn write_brightness_value_for_device(device: &BacklightDevice, value: Brightness
     }
 }
 
-fn max_handler() {
-    let device = read_device(BrightnessClass::Backlight, String::from("amdgpu_bl1"));
-
-    match device {
-        BrightnessDevice::Backlight(d) => println!("{}", d.max_brightness),
-    }
+fn max_handler(backlight_device: &BacklightDevice) {
+    println!("{}", backlight_device.max_brightness);
 }
 
-fn get_handler() {
-    let raw_devices = get_subdirectories("/sys/class/backlight/");
-
-    match raw_devices {
-        Ok(value) => {
-            for device in value {
-                let parsed = build_device(device);
-
-                match parsed {
-                    Ok(d) => println!("{:?}", d.brightness.0),
-                    Err(err) => println!("{:?}", err),
-                }
-            }
-        }
-        Err(err) => println!("{:?}", err),
-    }
+fn get_handler(device: &BacklightDevice) {
+    println!("{:?}", device.brightness.0);
 }
 
 #[derive(Debug)]
@@ -111,18 +133,21 @@ impl fmt::Display for DeviceError {
 
 impl std::error::Error for DeviceError {}
 
-fn build_device(device_name: String) -> Result<BacklightDevice, DeviceError> {
-    let root = "/sys/class/backlight/";
-    let path = Path::new(root).join(&device_name);
+fn build_device(class: BacklightType, device_name: String) -> Result<BacklightDevice, DeviceError> {
+    let class_sub_path = match class {
+        BacklightType::Backlight => "backlight",
+        BacklightType::Leds => "leds",
+    };
+    let root = format!("/sys/class/{}/", class_sub_path);
+    let path = Path::new(root.as_str()).join(&device_name);
     let brightness = read_u32_from_file(path.join("brightness"));
     let max_brightness = read_u32_from_file(path.join("max_brightness"));
-    let actual_brightness = read_u32_from_file(path.join("actual_brightness"));
 
     Ok(BacklightDevice {
         device_name,
         max_brightness,
         brightness: Brightness(brightness),
-        actual_brightness,
+        backlight_type: class,
     })
 }
 
@@ -152,22 +177,12 @@ fn get_subdirectories(path: &str) -> Result<Vec<String>, std::io::Error> {
     Ok(subdirs)
 }
 
-enum BrightnessClass {
-    Backlight,
+fn read_device(class: BacklightType, device_name: String) -> BacklightDevice {
+    let device = build_device(class, device_name);
+    device.unwrap()
 }
 
-enum BrightnessDevice {
-    Backlight(BacklightDevice),
-}
-
-fn read_device(class: BrightnessClass, device_name: String) -> BrightnessDevice {
-    let device = build_device(device_name);
-    BrightnessDevice::Backlight(device.unwrap())
-}
-
-fn set_handler(desired_brightness: String) {
-    let device = read_device(BrightnessClass::Backlight, String::from("amdgpu_bl1"));
-
+fn set_handler(device: &BacklightDevice, desired_brightness: String) {
     let b = parse_brightness(desired_brightness.as_str());
 
     match b {
@@ -176,30 +191,26 @@ fn set_handler(desired_brightness: String) {
 
             let as_data = e.0.parse::<f32>().unwrap_or_default();
 
-            match device {
-                BrightnessDevice::Backlight(value) => {
-                    println!("Found device details: {:?}", value);
+            println!("Found device details: {:?}", device);
 
-                    // FIXME: the behavior should be based on the operand. If the operand is set, then we
-                    // should perform arithmentics relative to the current brightness
-                    let max_brightness = value.max_brightness;
-                    let d = match e.1 {
-                        Some(_) => max_brightness as f32 * (as_data / 100.0),
-                        None => as_data,
-                    } as u32;
+            // FIXME: the behavior should be based on the operand. If the operand is set, then we
+            // should perform arithmentics relative to the current brightness
+            let max_brightness = device.max_brightness;
+            let d = match e.1 {
+                Some(_) => max_brightness as f32 * (as_data / 100.0),
+                None => as_data,
+            } as u32;
 
-                    let applied_operator = match e.2 {
-                        Some(e) => match e.as_str() {
-                            "+" => value.brightness.0 + d,
-                            "-" => value.brightness.0 - d,
-                            _ => d,
-                        },
-                        None => d,
-                    };
+            let applied_operator = match e.2 {
+                Some(e) => match e.as_str() {
+                    "+" => device.brightness.0 + d,
+                    "-" => device.brightness.0 - d,
+                    _ => d,
+                },
+                None => d,
+            };
 
-                    write_brightness_value_for_device(&value, Brightness(applied_operator));
-                }
-            }
+            write_brightness_value_for_device(&device, Brightness(applied_operator));
         }
         None => (),
     }
