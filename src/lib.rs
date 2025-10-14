@@ -31,7 +31,7 @@ pub struct BrightnessDevice {
 struct RawBrightnessConfig(String, Option<String>, Option<String>);
 
 fn write_brightness_value_for_device(device: &BrightnessDevice, value: Brightness) {
-    let resolved_brightness = min(max(0, value.0), device.max_brightness.0);
+    let resolved_brightness = value.0;
     println!("Setting to: {}", resolved_brightness);
 
     let root = format!("/sys/class/{}/", device.brightness_class);
@@ -97,34 +97,41 @@ fn get_subdirectories(path: &str) -> Result<Vec<String>, std::io::Error> {
     Ok(subdirs)
 }
 
+fn calculate_brightness(
+    brightness_config: RawBrightnessConfig,
+    device: &BrightnessDevice,
+) -> Brightness {
+    let desired_brightness = brightness_config.0.parse::<f32>().unwrap_or_default();
+    println!("Found device details: {:?}", device);
+
+    // FIXME: the behavior should be based on the operand. If the operand is set, then we
+    // should perform arithmentics relative to the current brightness
+    let max_brightness = device.max_brightness.0;
+    let d = match brightness_config.1 {
+        Some(_) => max_brightness as f32 * (desired_brightness / 100.0),
+        None => desired_brightness,
+    } as i32;
+
+    println!("Res {}", d);
+
+    let re = match brightness_config.2 {
+        Some(e) => match e.as_str() {
+            "+" => device.brightness.0 as i32 + d,
+            "-" => device.brightness.0 as i32 - d,
+            _ => d,
+        },
+        None => d,
+    };
+
+    Brightness(min(max(0, re), device.max_brightness.0 as i32) as u32)
+}
+
 pub fn set_handler(device: &BrightnessDevice, desired_brightness: String) {
     let brightness_config = parse_brightness(desired_brightness.as_str());
 
     if let Some(bc) = brightness_config {
-        println!("{:?}", bc);
-
-        let as_data = bc.0.parse::<f32>().unwrap_or_default();
-
-        println!("Found device details: {:?}", device);
-
-        // FIXME: the behavior should be based on the operand. If the operand is set, then we
-        // should perform arithmentics relative to the current brightness
-        let max_brightness = device.max_brightness.0;
-        let d = match bc.1 {
-            Some(_) => max_brightness as f32 * (as_data / 100.0),
-            None => as_data,
-        } as u32;
-
-        let applied_operator = match bc.2 {
-            Some(e) => match e.as_str() {
-                "+" => device.brightness.0 + d,
-                "-" => device.brightness.0 - d,
-                _ => d,
-            },
-            None => d,
-        };
-
-        write_brightness_value_for_device(device, Brightness(applied_operator));
+        let result = calculate_brightness(bc, device);
+        write_brightness_value_for_device(device, result);
     }
 }
 
@@ -161,4 +168,43 @@ pub fn read_all_brightness_devices() -> Vec<BrightnessDevice> {
     x.append(&mut led_devices);
 
     x
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_brightness() {
+        let bc = RawBrightnessConfig(
+            "10".to_string(),
+            Some("%".to_string()),
+            Some("+".to_string()),
+        );
+        let device = BrightnessDevice {
+            max_brightness: MaxBrightness(100),
+            brightness: Brightness(90),
+            device_name: "test".to_string(),
+            brightness_class: BrightnessClass::Backlight,
+        };
+        let result = calculate_brightness(bc, &device);
+        assert_eq!(result.0, 100);
+    }
+
+    #[test]
+    fn test_calculate_brightness_should_floor_to_zero_when_negative() {
+        let bc = RawBrightnessConfig(
+            "10".to_string(),
+            Some("%".to_string()),
+            Some("-".to_string()),
+        );
+        let device = BrightnessDevice {
+            max_brightness: MaxBrightness(100),
+            brightness: Brightness(9),
+            device_name: "test".to_string(),
+            brightness_class: BrightnessClass::Backlight,
+        };
+        let result = calculate_brightness(bc, &device);
+        assert_eq!(result.0, 0);
+    }
 }
