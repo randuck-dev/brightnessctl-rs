@@ -6,13 +6,15 @@ use std::{
 
 use regex::Regex;
 
-#[derive(Debug)]
-struct MaxBrightness(u32);
+pub mod config;
 
 #[derive(Debug)]
-struct Brightness(u32);
+pub struct MaxBrightness(pub u32);
 
-#[derive(Debug, strum_macros::Display)]
+#[derive(Debug)]
+pub struct Brightness(pub u32);
+
+#[derive(Debug, strum_macros::Display, PartialEq)]
 #[strum(serialize_all = "snake_case")]
 enum BrightnessClass {
     Backlight,
@@ -22,8 +24,8 @@ enum BrightnessClass {
 #[derive(Debug)]
 pub struct BrightnessDevice {
     pub device_name: String,
-    max_brightness: MaxBrightness,
-    brightness: Brightness,
+    pub max_brightness: MaxBrightness,
+    pub brightness: Brightness,
     brightness_class: BrightnessClass,
 }
 
@@ -69,6 +71,12 @@ fn build_device(class: BrightnessClass, device_name: String) -> Result<Brightnes
         brightness: Brightness(brightness),
         brightness_class: class,
     })
+}
+
+pub fn get_default_backlight_device(devices: &[BrightnessDevice]) -> Option<&BrightnessDevice> {
+    devices
+        .iter()
+        .find(|&x| x.brightness_class == BrightnessClass::Backlight)
 }
 
 fn read_u32_from_file(path: PathBuf) -> u32 {

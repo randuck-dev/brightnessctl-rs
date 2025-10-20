@@ -1,9 +1,6 @@
-{ lib
-, rustPlatform
-, pkg-config
-}:
+{ pkgs ? import <nixpkgs> { } }:
 
-rustPlatform.buildRustPackage rec {
+pkgs.rustPlatform.buildRustPackage rec {
   pname = "brightnessctl-rs";
   version = "0.1.0";
 
@@ -13,9 +10,9 @@ rustPlatform.buildRustPackage rec {
     lockFile = ./Cargo.lock;
   };
 
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [ pkgs.pkg-config ];
 
-  meta = with lib; {
+  meta = with pkgs.lib; {
     description = "Backlight brightness control CLI";
     homepage = "https://github.com/randuck-dev/brightnessctl-rs";
     license = licenses.mit;
